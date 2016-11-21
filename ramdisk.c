@@ -20,7 +20,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-
+#include <time.h>
+#include <stdarg.h>
 
 // set the block size to 1K bytes
 #define BLOCKSIZE 1024
@@ -41,9 +42,41 @@ int fileSize[MAXPATHLIST];
 //hold current path
 char cwd[PATH_MAX];
 
+
+// log handler
+#define LOGFILEPATH "/tmp/ramdisk.log"
+#define LOG_ENABLE 1
+int logfd;
+
+static void log_init(){
+	if(LOG_ENABLE)
+		logfd = open(LOGFILEPATH,O_WRONLY|O_CREAT);
+}
+
+static void log_close(){
+	if(LOG_ENABLE)
+		close(logfd);
+}
+
+static void log_write(char *logmsg, ...){
+	// copied from http://stackoverflow.com/questions/1442116/how-to-get-date-and-time-value-in-c-program
+	if(LOG_ENABLE){
+		time_t t = time(NULL);
+		struct tm tm = *localtime(&t);
+		dprintf(logfd,"%d-%d-%d %d:%d:%d : ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+		va_list args;
+	    va_start(args,logmsg);
+	    vdprintf(logfd,logmsg,args);
+	    va_end(args);
+	    dprintf(logfd,"\n");
+	}
+}
+
 static int ramdisk_getattr(const char *path, struct stat *stbuf)
 {
 	int res = 0;
+	log_write("ramdisk_getattr called with path : %s",path);
 
 	memset(stbuf, 0, sizeof(struct stat));
 	
@@ -55,6 +88,7 @@ static int ramdisk_getattr(const char *path, struct stat *stbuf)
 	
 	int i=0;
 	for(i=0;i<MAXPATHLIST;i++){
+		log_write("IN ramdisk_getattr pathlist[%d]=%s",i,pathlist[i]);
 		if(!strcmp(path,pathlist[i])){
 			//found path
 			//if folder set folder props
@@ -65,11 +99,13 @@ static int ramdisk_getattr(const char *path, struct stat *stbuf)
 				//else file props
 				stbuf->st_mode = S_IFREG | 0644;
 				stbuf->st_nlink = 1;
-				stbuf->st_size = 10240;
+				stbuf->st_size = fileSize[i];
 			}
+			log_write("FOUND path [%s] at index : %d",pathlist[i],i);
 			return res;
 		}
 	}
+	log_write("Couldn't find path [%s]",path);
 	
 	return -ENOENT;
 }
@@ -79,6 +115,8 @@ static int ramdisk_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	(void) offset;
 	(void) fi;
 	
+	log_write("ramdisk_readdir called with path : %s",path);
+
 	filler(buf, ".", NULL, 0);
 	filler(buf, "..", NULL, 0);
 	
@@ -132,7 +170,7 @@ static int ramdisk_mkdir(const char *path, mode_t mode){
 	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
 	write(fd,path,strlen(path));
 	*/
-	
+	log_write("ramdisk_mkdir called with path : %s",path);
 	int i,lastNull=-1;
 	for(i=0;i<MAXPATHLIST;i++){
 		//write(fd,"\nPATH:",strlen("\nPATH:"));
@@ -164,8 +202,10 @@ static int getfreeBlock(){
 	// return block id of next free block
 	// or -1 is no free blocks where ENOSPC should be set
 	int i=0;
+	log_write("getfreeBlock called");
 	for(i=0;i<BLOCKCOUNT;i++){
-		if(!bitMap[i])
+		log_write("val BITMAP[%d]=%d",i,bitMap[i]);
+		if(bitMap[i]==0)
 			return i;
 	}
 	return -1;
@@ -181,8 +221,7 @@ static void resetBlock(int blockNum){
 
 static int ramdisk_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
 	int i=0,fileExists=0,index=-1;
-	int fd = open("/tmp/output-write",O_RDWR|O_CREAT);
-	write(fd,"\nSTARTLOG\n",strlen("\nSTARTLOG\n"));
+	log_write("ramdisk_readdir called with path : %s",path);
 	
 	for(i=0;i<MAXPATHLIST;i++){
 		if(!strcmp(path,pathlist[i])){
@@ -197,8 +236,31 @@ static int ramdisk_write(const char *path, const char *buf, size_t size, off_t o
 		//based on offset, check which is the starting block
 		offset = 0;
 		int blockOffsetNum = offset/BLOCKSIZE;
-		write(fd,"\nSTARTLOG\n",strlen("\nSTARTLOG\n"));
+		log_write("ramdisk_write called with path : [%s] , buf : [%s]",path,buf);
 		
+		int byteWrite=size,nextBlock = blockMap[index];
+		while(byteWrite>0){
+			if(byteWrite<=BLOCKSIZE){
+				//write on remaining block
+				log_write("in ramdisk_write with only last block to write as byteWrite:%d",byteWrite);
+				char *offset = memoffset + (nextBlock*BLOCKSIZE);
+				strncpy(offset,buf,byteWrite);
+				byteWrite = 0;
+			}else{
+				log_write("in ramdisk_write with more block to write as byteWrite:%d",byteWrite);
+				char *offset = memoffset + (nextBlock*BLOCKSIZE);
+				strncpy(offset,buf,BLOCKSIZE);
+				nextBlock = getfreeBlock();
+				if(nextBlock==-1)
+					return -ENOSPC;
+				setBlock(nextBlock);
+				nextBlockMap[nextBlock]=nextBlock;
+				byteWrite -= BLOCKSIZE;
+			}
+		}
+		fileSize[index]=(int)size;
+		return (int)size;
+		/*
 		//check the blocks needed for write
 		char *next =  memoffset + blockMap[index];
 		next = next + blockOffsetNum;
@@ -219,20 +281,18 @@ static int ramdisk_write(const char *path, const char *buf, size_t size, off_t o
 		//fit the final left piece of buffer
 		if(size<BLOCKSIZE){
 			strncpy(next,buffPtr,size);
-			write(fd,"\nSTARTLOG\n",strlen("\nSTARTLOG\n"));
 		}
+		*/
 		
 	}else{
 		// file doesn't exists
 		return -ENOENT;
 	}
-	write(fd,"\nENDLOG\n",strlen("\nENDLOG\n"));
-	close(fd);
 	return 0;
 }
 
 static int ramdisk_open(const char *path, struct fuse_file_info *fi){
-	
+	log_write("ramdisk_open called with path : %s",path);
 	int i=0,fileExists=0;//,index=-1;
 	for(i=0;i<MAXPATHLIST;i++){
 		if(!strcmp(path,pathlist[i])){
@@ -241,52 +301,67 @@ static int ramdisk_open(const char *path, struct fuse_file_info *fi){
 		}
 	}
 	
-	if(fi->flags & O_CREAT){
-		//check if O_EXCL flag is set
-		if((fi->flags & O_EXCL)&&(fileExists)){
-				return -EEXIST;
-			}
-			int lastNull=-1;
-			//create a new entry in pathtable
-			for(i=0;i<MAXPATHLIST;i++){
-			if(pathlist[i][0]=='\0'){
-				lastNull=i;
-				break;
-			}
-			}
-			strcpy(pathlist[lastNull],strdup(path));
-			fileSize[lastNull]=0;
-			//get free block from bitmap
-			int blockNum = getfreeBlock();
-			//set the bitmap
-			setBlock(blockNum);
-			// allocate block
-			blockMap[lastNull]=blockNum;
-			
-	}else{
-		//create flag not set
-		if(!fileExists)
-			return -ENOENT;
+	if(!fileExists)
+		return -ENOENT;
 		
-	}
+	
 	
 	return 0;
 }
 
 static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset,
-		      struct fuse_file_info *fi)
-{
+		      struct fuse_file_info *fi){
 	//size_t len;
 	(void) fi;
-
-	memcpy(buf, "FIX CONTENT", 11);
-
-	return 11;
+	int i,fileExists=0,index=-1;
+	for(i=0;i<MAXPATHLIST;i++){
+		if(!strcmp(path,pathlist[i])){
+			fileExists=1;
+			index=i;
+			break;
+		}
+	}
+	
+	if(fileExists){
+		//file exists
+		//based on offset, check which is the starting block
+		offset = 0;
+		int blockOffsetNum = offset/BLOCKSIZE;
+		log_write("ramdisk_write called with path : [%s] , buf : [%s]",path,buf);
+		
+		int byteRead=size,nextBlock = blockMap[index];
+		if(byteRead<fileSize[index])
+			byteRead=fileSize[index];
+		while(byteRead>0){
+			if(nextBlock==-1)
+				break;
+			if(byteRead<=BLOCKSIZE){
+				//write on remaining block
+				log_write("in ramdisk_write with only last block to write as byteRead:%d",byteRead);
+				char *offset = memoffset + (nextBlock*BLOCKSIZE);
+				strncpy(buf,offset,byteRead);
+				byteRead = 0;
+			}else{
+				log_write("in ramdisk_write with more block to write as byteRead:%d",byteRead);
+				char *offset = memoffset + (nextBlock*BLOCKSIZE);
+				strncpy(buf,offset,BLOCKSIZE);
+				if(nextBlock==-1)
+					return -ENOSPC;
+				nextBlock = nextBlockMap[nextBlock];
+				byteRead -= BLOCKSIZE;
+			}
+		}
+		return ((int)size)-byteRead;
+	}else{
+		return -ENOENT;
+	}
+	return 0;
 }
 
 static int ramdisk_mknod(const char *path, mode_t mode, dev_t rdev)
 {
 	int res;
+	log_write("ramdisk_mknod called with path : %s",path);
 	/* On Linux this could just be 'mknod(path, mode, rdev)' but this
 	   is more portable 
 	if (S_ISREG(mode)) {
@@ -306,39 +381,129 @@ static int ramdisk_mknod(const char *path, mode_t mode, dev_t rdev)
 	return 0;
 }
 
-static int randisk_create(const char* pathStr, mode_t mode, struct fuse_file_info *fileInfo){
-int fd = open("/tmp/output-create",O_RDWR|O_CREAT);
-	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
-	close(fd);
-	
-	int lastNull=-1,i;
-	//create a new entry in pathtable
-	for(i=0;i<MAXPATHLIST;i++){
-	if(pathlist[i][0]=='\0'){
-		lastNull=i;
-		break;
-	}
-	}
-	strcpy(pathlist[lastNull],strdup(pathStr));
-	fileSize[lastNull]=0;
-	//get free block from bitmap
-	int blockNum = getfreeBlock();
-	//set the bitmap
-	setBlock(blockNum);
-	// allocate block
-	blockMap[lastNull]=blockNum;
 
-	return 0;
+
+static int checkInDir(char *dirStr,char *filePath){
+	int i=0;
+	while((i<strlen(dirStr))||(i<strlen(filePath))){
+		if(dirStr[i]!=filePath[i])
+			break;
+		i+=1;
+	}
+	if(i<strlen(dirStr))
+		return 0;
+
+	while(i<strlen(filePath)){
+		if(filePath[i]=='/')
+			return 0;
+		i+=1;
+	}
+	return 1;
 }
 
 
 static int ramdisk_truncate(const char *pathStr, off_t length)
 {
-	int fd = open("/tmp/output-truncate",O_RDWR|O_CREAT);
-	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
-	close(fd);
+	log_write("ramdisk_truncate called with path : %s",pathStr);
+
+	int i,index=-1,dirExists=0,fileExists=0;
+
+	for(i=0;i<MAXPATHLIST;i++){
+		if(!strcmp(pathStr,pathlist[i])){
+			fileExists=1;
+			index=i;
+			if(isDir[i]=='d')
+				return -EISDIR;
+		}else if(isDir[i]&&checkInDir(pathlist[i],(char *)pathStr)) {
+			dirExists = 1;
+		}
+		if(fileExists&&dirExists)
+			break;
+	}
+
+	if(checkInDir("/",(char *)pathStr))
+		dirExists=1;
+
+	log_write("fileExists=%d and dirExists=%d",fileExists,dirExists);
+
+	if(!dirExists)
+		return -ENOENT;
+
+	if(!fileExists){
+		// create the file
+		log_write("NEW file");
+		int lastNull=-1;
+		//create a new entry in pathtable
+		for(i=0;i<MAXPATHLIST;i++){
+			if(pathlist[i][0]=='\0'){
+				lastNull=i;
+				break;
+			}
+		}
+		if(lastNull==-1)
+			return -ENOSPC;
+		log_write("Found index %d free",lastNull);
+		strcpy(pathlist[lastNull],strdup(pathStr));
+		fileSize[lastNull]=0;
+		//get free block from bitmap
+		int blockNum = getfreeBlock();
+		log_write("Found free block at : %d ",blockNum);
+		//set the bitmap
+		setBlock(blockNum);
+		// allocate block
+		blockMap[lastNull]=blockNum;
+		nextBlockMap[blockNum]=-1;
+
+		return 0;
+	}else{
+		int size = 	fileSize[index];
+		if(length<=BLOCKSIZE){
+			if(size>BLOCKSIZE){
+				// allocated blocks > 1
+				int numBlocks = (size/BLOCKSIZE);
+				if(size%BLOCKSIZE==0)
+					numBlocks-=1;
+				int nextBlock = nextBlockMap[blockMap[index]];
+				int *prevBlock;
+
+				while((numBlocks>0)&&(nextBlock!=-1)){
+					 resetBlock(nextBlock);
+					 prevBlock = &nextBlockMap[nextBlock];
+					 nextBlock = nextBlockMap[nextBlock];
+					 *prevBlock=-1;
+					 numBlocks-=1;
+				}
+				
+			}
+		}else{
+			int startBlocks = (length/BLOCKSIZE);
+			if(length%BLOCKSIZE==0)
+				startBlocks-=1;
+			int nextBlock = nextBlockMap[blockMap[index]];
+			while((startBlocks>0)&&(nextBlock!=-1)){
+				nextBlock = nextBlockMap[nextBlock];
+				startBlocks-=1;
+			}
+			int *prevBlock;
+			while(nextBlock!=-1){
+				resetBlock(nextBlock);
+				prevBlock = &nextBlockMap[nextBlock];
+				nextBlock = nextBlockMap[nextBlock];
+				*prevBlock=-1;
+			}
+		}
+	}
+	fileSize[index]=length;
 	return 0;
 }
+
+
+static int randisk_create(const char* pathStr, mode_t mode, struct fuse_file_info *fileInfo){
+	log_write("ramdisk_create called with path : %s",pathStr);
+	ramdisk_truncate(pathStr,0);
+	return 0;
+}
+
 
 static int xmp_access(const char *path, int mask)
 {
@@ -566,12 +731,15 @@ void init_pathlist(){
 		fileSize[i] = 0;
 		isDir[i] = 'r';
 	}
-	
+	for(i=0;i<BLOCKCOUNT;i++){
+		bitMap[i]=0;
+	}
 	
 }
 
 
 int main(int argc,char *argv[]){
+	log_init();
 	memoffset = (char *)malloc(MEMORYSIZE);
 	memset(memoffset,0,MEMORYSIZE);
 	memset(bitMap,0,BLOCKCOUNT);
@@ -587,5 +755,9 @@ int main(int argc,char *argv[]){
 	strcpy(pathlist[3],"/mydir");
 	isDir[3]='d';
 	strcpy(pathlist[4],"/mydir/myfile3");
-	return fuse_main(argc,argv,&ramdisk_opts,NULL);
+	
+	log_write("LOG INITIALIZED, Running fuse");
+	int fuse_ret = fuse_main(argc,argv,&ramdisk_opts,NULL);
+	log_close();
+	return fuse_ret;
 }
