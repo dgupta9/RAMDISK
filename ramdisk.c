@@ -83,6 +83,8 @@ static int ramdisk_getattr(const char *path, struct stat *stbuf)
 	if (strcmp(path, "/") == 0) {
 		stbuf->st_mode = S_IFDIR | 0755;
 		stbuf->st_nlink = 2;
+		stbuf->st_uid = getuid();
+		stbuf->st_gid = stbuf->st_uid;
 		return res;
 	}
 	
@@ -92,6 +94,8 @@ static int ramdisk_getattr(const char *path, struct stat *stbuf)
 		if(!strcmp(path,pathlist[i])){
 			//found path
 			//if folder set folder props
+			stbuf->st_uid = getuid();
+			stbuf->st_gid = stbuf->st_uid;
 			if(isDir[i]=='d'){
 				stbuf->st_mode = S_IFDIR | 0755;
 				stbuf->st_nlink = 2;
@@ -498,22 +502,70 @@ static int ramdisk_truncate(const char *pathStr, off_t length)
 }
 
 
-static int randisk_create(const char* pathStr, mode_t mode, struct fuse_file_info *fileInfo){
+static int ramdisk_unlink(const char *path) {
+	int i,index=-1,dirExists=0,fileExists=0;
+	log_write("in ramdisk_unlink");
+	for(i=0;i<MAXPATHLIST;i++){
+		if(!strcmp(path,pathlist[i])){
+			fileExists=1;
+			index=i;
+			if(isDir[i]=='d')
+				return -EISDIR;
+			break;
+		}
+	}
+
+	if(!fileExists)
+		return -ENOENT;
+
+	log_write("in ramdisk_unlink found path [%s] at index [%d]",path,index);
+	int nextBlock = blockMap[index];
+	while(nextBlock!= -1){
+		resetBlock(nextBlock);
+		int *ptrprevblock = &nextBlockMap[index];
+		nextBlock = nextBlockMap[index];
+		*ptrprevblock=-1;
+	}
+
+	blockMap[index]=-1;
+	strcpy(pathlist[i],"");
+	isDir[index]='r';
+	return 0;
+}
+
+
+static int ramdisk_create(const char* pathStr, mode_t mode, struct fuse_file_info *fileInfo){
 	log_write("ramdisk_create called with path : %s",pathStr);
 	ramdisk_truncate(pathStr,0);
 	return 0;
+}
+
+static int ramdisk_access(const char* path,int mask){
+	int i,index=-1,dirExists=0,fileExists=0;
+	log_write("in ramdisk_access");
+	for(i=0;i<MAXPATHLIST;i++){
+		if(!strcmp(path,pathlist[i])){
+			return 0;
+		}
+	}
+	if(!strcmp(path,"/"))
+		return 0;
+	return -ENOENT;
 }
 
 
 static int xmp_access(const char *path, int mask)
 {
 	int res;
-int fd = open("/tmp/output-access",O_RDWR|O_CREAT);
+	int fd = open("/tmp/output-access",O_RDWR|O_CREAT);
 	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
 	close(fd);
 	res = access(path, mask);
 	if (res == -1)
 		return -errno;
+
+	if(!strcmp(path,"/"))
+		return 0;
 	return 0;
 }
 
@@ -704,14 +756,13 @@ static struct fuse_operations ramdisk_opts={
 	.write		= ramdisk_write,
 	.read		= ramdisk_read,
 	.mknod		= ramdisk_mknod,
-	.create		= randisk_create,
+	.create		= ramdisk_create,
 	.truncate	= ramdisk_truncate,
+	.unlink		= ramdisk_unlink,
+	.access		= ramdisk_access,
 
-	
-	.access		= xmp_access,
 	.readlink	= xmp_readlink,
 	.symlink	= xmp_symlink,
-	.unlink		= xmp_unlink,
 	.rmdir		= xmp_rmdir,
 	.rename		= xmp_rename,
 	.link		= xmp_link,
