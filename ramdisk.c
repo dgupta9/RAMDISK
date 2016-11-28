@@ -25,15 +25,19 @@
 
 // set the block size to 1K bytes
 #define BLOCKSIZE 1024
-#define MEMORYSIZE 1048576
-#define BLOCKCOUNT 1024
+
+//#define MEMORYSIZE 1048576
+long memorysize = 0;
+long blockcount = 0;
+//#define BLOCKCOUNT 1024
+
 //hold pointer to ram disk block start
 char *memoffset;
-char bitMap[BLOCKCOUNT];
-int  nextBlockMap[BLOCKCOUNT];
+char *bitMap;//[BLOCKCOUNT];
+int  *nextBlockMap;//[BLOCKCOUNT];
 
 // hold all the paths as list
-#define MAXPATHLIST 20
+#define MAXPATHLIST 2000
 char pathlist[MAXPATHLIST][PATH_MAX];
 int  blockMap[MAXPATHLIST];
 char isDir[MAXPATHLIST];
@@ -90,7 +94,7 @@ static int ramdisk_getattr(const char *path, struct stat *stbuf)
 	
 	int i=0;
 	for(i=0;i<MAXPATHLIST;i++){
-		log_write("IN ramdisk_getattr pathlist[%d]=%s",i,pathlist[i]);
+		//log_write("IN ramdisk_getattr pathlist[%d]=%s",i,pathlist[i]);
 		if(!strcmp(path,pathlist[i])){
 			//found path
 			//if folder set folder props
@@ -207,7 +211,7 @@ static int getfreeBlock(){
 	// or -1 is no free blocks where ENOSPC should be set
 	int i=0;
 	log_write("getfreeBlock called");
-	for(i=0;i<BLOCKCOUNT;i++){
+	for(i=0;i<blockcount;i++){
 		//log_write("val BITMAP[%d]=%d",i,bitMap[i]);
 		if(bitMap[i]==0)
 			return i;
@@ -225,7 +229,7 @@ static void resetBlock(int blockNum){
 
 static int ramdisk_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
 	int i=0,fileExists=0,index=-1;
-	log_write("ramdisk_readdir called with path : %s",path);
+	log_write("ramdisk_write called with path : [%s] , buf : [], size: [%d] and offset:[%d]",path,size,offset);
 	
 	for(i=0;i<MAXPATHLIST;i++){
 		if(!strcmp(path,pathlist[i])){
@@ -238,9 +242,14 @@ static int ramdisk_write(const char *path, const char *buf, size_t size, off_t o
 	if(fileExists){
 		//file exists
 		//based on offset, check which is the starting block
+		if(offset>fileSize[index])
+			return -ENXIO;
+
+
+
 		offset = 0;
 		int blockOffsetNum = offset/BLOCKSIZE;
-		log_write("ramdisk_write called with path : [%s] , buf : [%s]",path,buf);
+		log_write("ramdisk_write and file exists");
 		
 		int byteWrite=size,nextBlock = blockMap[index];
 		while(byteWrite>0){
@@ -731,7 +740,7 @@ void init_pathlist(){
 		fileSize[i] = 0;
 		isDir[i] = 'r';
 	}
-	for(i=0;i<BLOCKCOUNT;i++){
+	for(i=0;i<blockcount;i++){
 		bitMap[i]=0;
 	}
 	
@@ -740,11 +749,34 @@ void init_pathlist(){
 
 int main(int argc,char *argv[]){
 	log_init();
-	memoffset = (char *)malloc(MEMORYSIZE);
-	memset(memoffset,0,MEMORYSIZE);
-	memset(bitMap,0,BLOCKCOUNT);
-	memset(nextBlockMap,-1,BLOCKCOUNT*(sizeof(int)));
-	memset(blockMap,-1,BLOCKCOUNT*(sizeof(int)));
+
+	if(argc == 3){
+		//running without mount file
+		memorysize = atoi(argv[2]);
+		argv[2][0]='\0';
+	}else{
+		//running with mount file
+		memorysize = atoi(argv[3]);
+		argv[3][0]='\0';
+	}
+	argc -=1;
+
+	if(memorysize == 0)
+		return -1;
+	memorysize *= 1024*1024;
+
+	memoffset = (char *)malloc(memorysize);
+	memset(memoffset,0,memorysize);
+
+	blockcount = memorysize/BLOCKSIZE;
+	
+	bitMap = (char*) malloc(blockcount);
+	memset(bitMap,0,blockcount);
+	
+	nextBlockMap = (int*) malloc(blockcount*(sizeof(int)));
+	memset(nextBlockMap,-1,blockcount*(sizeof(int)));
+
+	memset(blockMap,-1,MAXPATHLIST*(sizeof(int)));
 	init_pathlist();
 	/*
 	strcpy(pathlist[0],"/myasdf");
