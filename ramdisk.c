@@ -208,7 +208,7 @@ static int getfreeBlock(){
 	int i=0;
 	log_write("getfreeBlock called");
 	for(i=0;i<BLOCKCOUNT;i++){
-		log_write("val BITMAP[%d]=%d",i,bitMap[i]);
+		//log_write("val BITMAP[%d]=%d",i,bitMap[i]);
 		if(bitMap[i]==0)
 			return i;
 	}
@@ -316,6 +316,7 @@ static int ramdisk_open(const char *path, struct fuse_file_info *fi){
 static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset,
 		      struct fuse_file_info *fi){
 	//size_t len;
+	log_write("ramdisk_read called with path : [%s], size:[%d], offset : [%d]",path,size,offset);
 	(void) fi;
 	int i,fileExists=0,index=-1;
 	for(i=0;i<MAXPATHLIST;i++){
@@ -331,7 +332,7 @@ static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset,
 		//based on offset, check which is the starting block
 		offset = 0;
 		int blockOffsetNum = offset/BLOCKSIZE;
-		log_write("ramdisk_write called with path : [%s] , buf : [%s]",path,buf);
+		log_write("ramdisk_read called with path : [%s] , buf : [%s]",path,buf);
 		
 		int byteRead=size,nextBlock = blockMap[index];
 		if(byteRead<fileSize[index])
@@ -341,12 +342,12 @@ static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset,
 				break;
 			if(byteRead<=BLOCKSIZE){
 				//write on remaining block
-				log_write("in ramdisk_write with only last block to write as byteRead:%d",byteRead);
+				log_write("in ramdisk_read with only last block to write as byteRead:%d",byteRead);
 				char *offset = memoffset + (nextBlock*BLOCKSIZE);
 				strncpy(buf,offset,byteRead);
 				byteRead = 0;
 			}else{
-				log_write("in ramdisk_write with more block to write as byteRead:%d",byteRead);
+				log_write("in ramdisk_read with more block to write as byteRead:%d",byteRead);
 				char *offset = memoffset + (nextBlock*BLOCKSIZE);
 				strncpy(buf,offset,BLOCKSIZE);
 				if(nextBlock==-1)
@@ -379,9 +380,7 @@ static int ramdisk_mknod(const char *path, mode_t mode, dev_t rdev)
 	if (res == -1)
 		return -errno;
 	*/
-	int fd = open("/tmp/output-mknod",O_RDWR|O_CREAT);
-	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
-	close(fd);
+	log_write("ramdisk_mknod called with path : [%s]",path);
 	return 0;
 }
 
@@ -389,19 +388,23 @@ static int ramdisk_mknod(const char *path, mode_t mode, dev_t rdev)
 
 static int checkInDir(char *dirStr,char *filePath){
 	int i=0;
-	while((i<strlen(dirStr))||(i<strlen(filePath))){
+	log_write("checkInDir called with dirStr:[%s] len : %d and filePath:[%s]",dirStr,strlen(dirStr),filePath);
+	while((i<strlen(dirStr))&&(i<strlen(filePath))){
+		log_write("matching [%d] == [%c]",dirStr[i],filePath[i]);
 		if(dirStr[i]!=filePath[i])
 			break;
 		i+=1;
 	}
+
+	log_write("i is :%d",i);
 	if(i<strlen(dirStr))
 		return 0;
-
+	/*
 	while(i<strlen(filePath)){
 		if(filePath[i]=='/')
 			return 0;
 		i+=1;
-	}
+	}*/
 	return 1;
 }
 
@@ -418,7 +421,7 @@ static int ramdisk_truncate(const char *pathStr, off_t length)
 			index=i;
 			if(isDir[i]=='d')
 				return -EISDIR;
-		}else if(isDir[i]&&checkInDir(pathlist[i],(char *)pathStr)) {
+		}else if((isDir[i]=='d')&&(checkInDir(pathlist[i],(char *)pathStr))) {
 			dirExists = 1;
 		}
 		if(fileExists&&dirExists)
@@ -504,7 +507,7 @@ static int ramdisk_truncate(const char *pathStr, off_t length)
 
 static int ramdisk_unlink(const char *path) {
 	int i,index=-1,dirExists=0,fileExists=0;
-	log_write("in ramdisk_unlink");
+	log_write("ramdisk_unlink called with path : %s",path);
 	for(i=0;i<MAXPATHLIST;i++){
 		if(!strcmp(path,pathlist[i])){
 			fileExists=1;
@@ -542,7 +545,7 @@ static int ramdisk_create(const char* pathStr, mode_t mode, struct fuse_file_inf
 
 static int ramdisk_access(const char* path,int mask){
 	int i,index=-1,dirExists=0,fileExists=0;
-	log_write("in ramdisk_access");
+	log_write("in ramdisk_access with path : %s, mask: %d",path,mask);
 	for(i=0;i<MAXPATHLIST;i++){
 		if(!strcmp(path,pathlist[i])){
 			return 0;
@@ -553,60 +556,50 @@ static int ramdisk_access(const char* path,int mask){
 	return -ENOENT;
 }
 
-
-static int xmp_access(const char *path, int mask)
+static int ramdisk_readlink(const char *path, char *buf, size_t size)
 {
-	int res;
-	int fd = open("/tmp/output-access",O_RDWR|O_CREAT);
-	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
-	close(fd);
-	res = access(path, mask);
-	if (res == -1)
-		return -errno;
+	log_write("ramdisk_readlink called with path : %s",path);
+	return 0;
+}
 
-	if(!strcmp(path,"/"))
+static int ramdisk_rename(const char *from, const char *to)
+{
+	log_write("ramdisk_rename called with from: [%s] and to [%s]",from,to);
+	int i,index=-1,dir=0,fileExists=0;
+	for(i=0;i<MAXPATHLIST;i++){
+		if(!strcmp(from,pathlist[i])){
+			fileExists=1;
+			index=i;
+			if(isDir[i]=='d')
+				dir=1;
+		}
+	}
+
+	if(dir){
+		//special handling for directory	
+		log_write("ramdisk_rename called for directory");
+	}else{
+		if(fileExists)
+			strcpy(pathlist[index],to);
 		return 0;
+	}
+
+	if(!strcmp(from,"/"))
+		return -EACCES;
+
+	return -ENOENT;
+}
+
+static int ramdisk_rmdir(const char *path)
+{
+	log_write("ramdisk_rmdir called with path: %s",path);
 	return 0;
 }
 
-static int xmp_readlink(const char *path, char *buf, size_t size)
+
+static int ramdisk_utimens(const char *path, const struct timespec ts[2])
 {
-	int res;
-int fd = open("/tmp/output-readlink",O_RDWR|O_CREAT);
-	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
-	close(fd);
-	res = readlink(path, buf, size - 1);
-	if (res == -1)
-		return -errno;
-
-	buf[res] = '\0';
-	return 0;
-}
-
-
-
-static int xmp_unlink(const char *path)
-{
-	int res;
-int fd = open("/tmp/output-unlink",O_RDWR|O_CREAT);
-	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
-	close(fd);
-	res = unlink(path);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-static int xmp_rmdir(const char *path)
-{
-	int res;
-int fd = open("/tmp/output-rmdir",O_RDWR|O_CREAT);
-	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
-	close(fd);
-	res = rmdir(path);
-	if (res == -1)
-		return -errno;
+	log_write("ramdisk_utimens called with path: %s",path);
 
 	return 0;
 }
@@ -624,18 +617,7 @@ int fd = open("/tmp/output-symlink",O_RDWR|O_CREAT);
 	return 0;
 }
 
-static int xmp_rename(const char *from, const char *to)
-{
-	int res;
-int fd = open("/tmp/output-rename",O_RDWR|O_CREAT);
-	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
-	close(fd);
-	res = rename(from, to);
-	if (res == -1)
-		return -errno;
 
-	return 0;
-}
 
 static int xmp_link(const char *from, const char *to)
 {
@@ -670,38 +652,6 @@ int fd = open("/tmp/output-chown",O_RDWR|O_CREAT);
 	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
 	close(fd);
 	res = lchown(path, uid, gid);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-static int xmp_truncate(const char *path, off_t size)
-{
-	int res;
-int fd = open("/tmp/output-truncate",O_RDWR|O_CREAT);
-	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
-	close(fd);
-	res = truncate(path, size);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-static int xmp_utimens(const char *path, const struct timespec ts[2])
-{
-	int res;
-	struct timeval tv[2];
-int fd = open("/tmp/output-utimens",O_RDWR|O_CREAT);
-	write(fd,"STARTLOG\n",strlen("STARTLOG\n"));
-	close(fd);
-	tv[0].tv_sec = ts[0].tv_sec;
-	tv[0].tv_usec = ts[0].tv_nsec / 1000;
-	tv[1].tv_sec = ts[1].tv_sec;
-	tv[1].tv_usec = ts[1].tv_nsec / 1000;
-
-	res = utimes(path, tv);
 	if (res == -1)
 		return -errno;
 
@@ -760,16 +710,15 @@ static struct fuse_operations ramdisk_opts={
 	.truncate	= ramdisk_truncate,
 	.unlink		= ramdisk_unlink,
 	.access		= ramdisk_access,
+	.rmdir		= ramdisk_rmdir,
+	.rename		= ramdisk_rename,
+	.readlink	= ramdisk_readlink,
+	.utimens	= ramdisk_utimens,
 
-	.readlink	= xmp_readlink,
 	.symlink	= xmp_symlink,
-	.rmdir		= xmp_rmdir,
-	.rename		= xmp_rename,
 	.link		= xmp_link,
 	.chmod		= xmp_chmod,
 	.chown		= xmp_chown,
-	.truncate	= xmp_truncate,
-	.utimens	= xmp_utimens,
 	.statfs		= xmp_statfs,
 	.release	= xmp_release,
 	.fsync		= xmp_fsync,
@@ -797,7 +746,7 @@ int main(int argc,char *argv[]){
 	memset(nextBlockMap,-1,BLOCKCOUNT*(sizeof(int)));
 	memset(blockMap,-1,BLOCKCOUNT*(sizeof(int)));
 	init_pathlist();
-	
+	/*
 	strcpy(pathlist[0],"/myasdf");
 	strcpy(pathlist[1],"/myfile");
 	fileSize[1] = 1024;
@@ -806,7 +755,7 @@ int main(int argc,char *argv[]){
 	strcpy(pathlist[3],"/mydir");
 	isDir[3]='d';
 	strcpy(pathlist[4],"/mydir/myfile3");
-	
+	*/
 	log_write("LOG INITIALIZED, Running fuse");
 	int fuse_ret = fuse_main(argc,argv,&ramdisk_opts,NULL);
 	log_close();
