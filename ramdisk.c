@@ -286,7 +286,7 @@ static int ramdisk_write(const char *path, const char *buf, size_t size, off_t o
 		while(byteWrite>0){
 			if(partialBlock){
 				log_write("in ramdisk_write with partial offset to write [%d] as byteWrite:%d, offset : %d", nextBlock, byteWrite,offset);
-				char *blockoffset = memoffset + blockOffsetNum*BLOCKSIZE + (nextBlock*BLOCKSIZE);
+				char *blockoffset = memoffset + (nextBlock*BLOCKSIZE);
 				int partialoffset = offset - ((offset/BLOCKSIZE) * BLOCKSIZE);
 				blockoffset += partialoffset;
 				strncpy(blockoffset,buf,(BLOCKSIZE-partialoffset));
@@ -297,14 +297,14 @@ static int ramdisk_write(const char *path, const char *buf, size_t size, off_t o
 			}else if(byteWrite<=BLOCKSIZE){
 				//write on remaining block
 				log_write("in ramdisk_write with only last block [%d] to write as byteWrite:%d",nextBlock, byteWrite);
-				char *offset = memoffset + blockOffsetNum*BLOCKSIZE + (nextBlock*BLOCKSIZE);
+				char *offset = memoffset  + (nextBlock*BLOCKSIZE);
 				strncpy(offset,buf,byteWrite);
 				fileSize[index]+=byteWrite;
 				byteWrite = 0;
 			}else {
 				log_write("in ramdisk_write with more block to write as byteWrite:%d",byteWrite);
 				log_write("writing a block : [%d]",nextBlock);
-				char *offset = memoffset + blockOffsetNum*BLOCKSIZE + (nextBlock*BLOCKSIZE);
+				char *offset = memoffset  + (nextBlock*BLOCKSIZE);
 				strncpy(offset,buf,BLOCKSIZE);
 				int t = nextBlock;
 				nextBlock = getfreeBlock();
@@ -414,7 +414,7 @@ static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset,
 				break;
 			if(partialBlock){
 				log_write("in ramdisk_read with partial offset to read as byteRead:%d, offset : %d",byteRead,offset);
-				char *blockoffset = memoffset + blockOffsetNum*BLOCKSIZE + (nextBlock*BLOCKSIZE);
+				char *blockoffset = memoffset + (nextBlock*BLOCKSIZE);
 				int partialoffset = offset - ((offset/BLOCKSIZE) * BLOCKSIZE);
 				blockoffset += partialoffset;
 				strncpy(buf,blockoffset,(BLOCKSIZE-partialoffset));
@@ -424,13 +424,13 @@ static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset,
 			}else if(byteRead<=BLOCKSIZE){
 				//write on remaining block
 				log_write("in ramdisk_read with only last block to read as byteRead:%d",byteRead);
-				char *offset = memoffset + blockOffsetNum*BLOCKSIZE + (nextBlock*BLOCKSIZE);
+				char *offset = memoffset  + (nextBlock*BLOCKSIZE);
 				strncpy(buf,offset,byteRead);
 				byteRead = 0;
 			}else {
 				log_write("in ramdisk_read with more block to read as byteRead:%d",byteRead);
 				log_write("reading a block : [%d]",nextBlock);
-				char *offset = memoffset + blockOffsetNum*BLOCKSIZE  + (nextBlock*BLOCKSIZE);
+				char *offset = memoffset  + (nextBlock*BLOCKSIZE);
 				strncpy(buf,offset,BLOCKSIZE);
 				log_write("value read : [[%s]]",buf);
 				nextBlock = nextBlockMap[nextBlock];
