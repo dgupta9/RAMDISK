@@ -52,6 +52,9 @@ char cwd[PATH_MAX];
 #define LOG_ENABLE 1
 int logfd;
 
+int usePersist = 0;
+char persistPath[PATH_MAX];
+
 static void log_init(){
 	if(LOG_ENABLE)
 		logfd = open(LOGFILEPATH,O_WRONLY|O_CREAT);
@@ -103,6 +106,7 @@ static int ramdisk_getattr(const char *path, struct stat *stbuf)
 			if(isDir[i]=='d'){
 				stbuf->st_mode = S_IFDIR | 0755;
 				stbuf->st_nlink = 2;
+				stbuf->st_size = 4096;
 			}else{
 				//else file props
 				stbuf->st_mode = S_IFREG | 0644;
@@ -242,36 +246,78 @@ static int ramdisk_write(const char *path, const char *buf, size_t size, off_t o
 	if(fileExists){
 		//file exists
 		//based on offset, check which is the starting block
+		log_write("ramdisk_write offsetchecksum offset : [%d], filesize : [%d]",offset,fileSize[index]);
 		if(offset>fileSize[index])
 			return -ENXIO;
 
+		
 
-
-		offset = 0;
+		//offset = 0;
 		int blockOffsetNum = offset/BLOCKSIZE;
 		log_write("ramdisk_write and file exists");
 		
 		int byteWrite=size,nextBlock = blockMap[index];
-		while(byteWrite>0){
-			if(byteWrite<=BLOCKSIZE){
-				//write on remaining block
-				log_write("in ramdisk_write with only last block to write as byteWrite:%d",byteWrite);
-				char *offset = memoffset + (nextBlock*BLOCKSIZE);
-				strncpy(offset,buf,byteWrite);
-				byteWrite = 0;
+
+		//handle offset
+		int partialBlock = 0;
+		if(offset != 0){
+			if(offset%BLOCKSIZE == 0){
+				//offset aligns with block 
 			}else{
+				partialBlock = 1;
+			}
+			int temp = blockOffsetNum;
+			log_write("block offset temo : %d , %d , %d",temp,nextBlock,nextBlockMap[nextBlock]);
+			while(temp>1){
+				nextBlock = nextBlockMap[nextBlock];
+				temp -=1;
+			}
+			if(offset>=BLOCKSIZE){
+				int t = getfreeBlock();
+				if(t==-1)
+					return -ENOSPC;
+				setBlock(t);
+				nextBlockMap[nextBlock] = t;
+				nextBlock = t;
+			}
+		}
+
+
+		while(byteWrite>0){
+			if(partialBlock){
+				log_write("in ramdisk_write with partial offset to write [%d] as byteWrite:%d, offset : %d", nextBlock, byteWrite,offset);
+				char *blockoffset = memoffset + blockOffsetNum*BLOCKSIZE + (nextBlock*BLOCKSIZE);
+				int partialoffset = offset - ((offset/BLOCKSIZE) * BLOCKSIZE);
+				blockoffset += partialoffset;
+				strncpy(blockoffset,buf,(BLOCKSIZE-partialoffset));
+				partialBlock = 0;
+				byteWrite -=(BLOCKSIZE-partialoffset);
+				fileSize[index]+=(BLOCKSIZE-partialoffset);
+				buf += (BLOCKSIZE-partialoffset);
+			}else if(byteWrite<=BLOCKSIZE){
+				//write on remaining block
+				log_write("in ramdisk_write with only last block [%d] to write as byteWrite:%d",nextBlock, byteWrite);
+				char *offset = memoffset + blockOffsetNum*BLOCKSIZE + (nextBlock*BLOCKSIZE);
+				strncpy(offset,buf,byteWrite);
+				fileSize[index]+=byteWrite;
+				byteWrite = 0;
+			}else {
 				log_write("in ramdisk_write with more block to write as byteWrite:%d",byteWrite);
-				char *offset = memoffset + (nextBlock*BLOCKSIZE);
+				log_write("writing a block : [%d]",nextBlock);
+				char *offset = memoffset + blockOffsetNum*BLOCKSIZE + (nextBlock*BLOCKSIZE);
 				strncpy(offset,buf,BLOCKSIZE);
+				int t = nextBlock;
 				nextBlock = getfreeBlock();
 				if(nextBlock==-1)
 					return -ENOSPC;
 				setBlock(nextBlock);
-				nextBlockMap[nextBlock]=nextBlock;
+				nextBlockMap[t]=nextBlock;
 				byteWrite -= BLOCKSIZE;
+				fileSize[index]+=BLOCKSIZE;
+				buf += BLOCKSIZE;
 			}
 		}
-		fileSize[index]=(int)size;
+		//fileSize[index]=(int)size;
 		return (int)size;
 		/*
 		//check the blocks needed for write
@@ -339,6 +385,63 @@ static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset,
 	if(fileExists){
 		//file exists
 		//based on offset, check which is the starting block
+
+		if(offset>fileSize[index])
+			return -ENXIO;
+
+		//offset = 0;
+		int blockOffsetNum = offset/BLOCKSIZE;
+		log_write("ramdisk_read and file exists");
+		
+		int byteRead=size,nextBlock = blockMap[index];
+
+		//handle offset
+		int partialBlock = 0;
+		if(offset != 0){
+			if(offset%BLOCKSIZE == 0){
+				//offset aligns with block 
+			}else{
+				partialBlock = 1;
+			}
+			int temp =blockOffsetNum;
+			while(temp>0){
+				nextBlock = nextBlockMap[nextBlock];
+				temp -=1;
+			}
+		}
+		while(byteRead>0){
+			if(nextBlock ==-1)
+				break;
+			if(partialBlock){
+				log_write("in ramdisk_read with partial offset to read as byteRead:%d, offset : %d",byteRead,offset);
+				char *blockoffset = memoffset + blockOffsetNum*BLOCKSIZE + (nextBlock*BLOCKSIZE);
+				int partialoffset = offset - ((offset/BLOCKSIZE) * BLOCKSIZE);
+				blockoffset += partialoffset;
+				strncpy(buf,blockoffset,(BLOCKSIZE-partialoffset));
+				partialBlock = 0;
+				byteRead -=(BLOCKSIZE-partialoffset);
+				buf += partialoffset;
+			}else if(byteRead<=BLOCKSIZE){
+				//write on remaining block
+				log_write("in ramdisk_read with only last block to read as byteRead:%d",byteRead);
+				char *offset = memoffset + blockOffsetNum*BLOCKSIZE + (nextBlock*BLOCKSIZE);
+				strncpy(buf,offset,byteRead);
+				byteRead = 0;
+			}else {
+				log_write("in ramdisk_read with more block to read as byteRead:%d",byteRead);
+				log_write("reading a block : [%d]",nextBlock);
+				char *offset = memoffset + blockOffsetNum*BLOCKSIZE  + (nextBlock*BLOCKSIZE);
+				strncpy(buf,offset,BLOCKSIZE);
+				log_write("value read : [[%s]]",buf);
+				nextBlock = nextBlockMap[nextBlock];
+				byteRead -= BLOCKSIZE;
+				buf += BLOCKSIZE;
+				log_write("left bytes : %d",byteRead);
+			}
+		}
+
+
+/*
 		offset = 0;
 		int blockOffsetNum = offset/BLOCKSIZE;
 		log_write("ramdisk_read called with path : [%s] , buf : [%s]",path,buf);
@@ -364,8 +467,8 @@ static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset,
 				nextBlock = nextBlockMap[nextBlock];
 				byteRead -= BLOCKSIZE;
 			}
-		}
-		return ((int)size)-byteRead;
+		}*/
+		return ((int)size)-offset;
 	}else{
 		return -ENOENT;
 	}
@@ -602,6 +705,51 @@ static int ramdisk_rename(const char *from, const char *to)
 static int ramdisk_rmdir(const char *path)
 {
 	log_write("ramdisk_rmdir called with path: %s",path);
+
+	//check for subfolder or files inside the dir
+	int i=0;
+	// check if directory exists
+	int exists=0,dir=0,index=-1;
+	for(i=0;i<MAXPATHLIST;i++){
+		if(!strcmp(path,pathlist[i])){
+			if(isDir[i]=='d'){
+				exists=1;
+				dir=1;
+				index=i;
+			}
+			break;
+		}
+	}
+	
+	if(!strcmp(path, "/")){
+		log_write("ramdisk_rmdir return ebusy");
+		return -EBUSY;
+	}
+
+	if(!exists){
+		log_write("ramdisk_rmdir return enoent");
+		return -ENOENT;
+	}
+	
+	char pattern[PATH_MAX];
+	strcpy(pattern,path);
+	if(pattern[strlen(pattern)-1] != '/')
+		strcat(pattern,"/*");
+	else
+		strcat(pattern,"*");
+	for(i=0;i<MAXPATHLIST;i++){
+		if(!fnmatch(pattern,pathlist[i],FNM_PATHNAME)){
+			log_write("ramdisk_rmdir return enotempty cause file [%s] exists",pathlist[i]);
+			return -ENOTEMPTY;
+		}
+	}
+
+	// delete the folder
+	isDir[index]=='r';
+	strcpy(pathlist[index],"");
+	pathlist[index][0] = '\0';
+
+
 	return 0;
 }
 
@@ -707,6 +855,32 @@ int fd = open("/tmp/output-fsync",O_RDWR|O_CREAT);
 	return 0;
 }
 
+static void ramdisk_destroy(){
+	log_write("in ramdisk_destroy !!! with usePersist:%d",usePersist);
+	if(usePersist){
+		// save content is disk
+		log_write("saving content in [%s]",persistPath);
+		FILE *dataFile = fopen(persistPath,"wb");
+		memorysize /= 1024*1024;
+		fwrite(&memorysize,sizeof(int),1,dataFile);
+		fwrite(bitMap,1,blockcount,dataFile);
+		fwrite(nextBlockMap,sizeof(int),blockcount,dataFile);
+		fwrite(blockMap,sizeof(int),MAXPATHLIST,dataFile);
+		int i=0;
+		for(i=0;i<MAXPATHLIST;i++){
+			fwrite(&pathlist[i],1,PATH_MAX,dataFile);
+		}
+		fwrite(fileSize,sizeof(int),MAXPATHLIST , dataFile);
+		fwrite(blockMap,sizeof(int),MAXPATHLIST,dataFile);
+		fwrite(isDir,1,MAXPATHLIST,dataFile);
+
+		
+		memorysize *= 1024*1024;
+		fwrite(memoffset,1,memorysize,dataFile);	
+		fclose(dataFile);	
+	}
+}
+
 static struct fuse_operations ramdisk_opts={
 	.getattr	= ramdisk_getattr,
 	.readdir	= ramdisk_readdir,
@@ -723,6 +897,7 @@ static struct fuse_operations ramdisk_opts={
 	.rename		= ramdisk_rename,
 	.readlink	= ramdisk_readlink,
 	.utimens	= ramdisk_utimens,
+	.destroy 	= ramdisk_destroy,
 
 	.symlink	= xmp_symlink,
 	.link		= xmp_link,
@@ -746,48 +921,120 @@ void init_pathlist(){
 	
 }
 
-
-int main(int argc,char *argv[]){
-	log_init();
-
-	if(argc == 3){
-		//running without mount file
-		memorysize = atoi(argv[2]);
-		argv[2][0]='\0';
-	}else{
-		//running with mount file
-		memorysize = atoi(argv[3]);
-		argv[3][0]='\0';
+int loads_data(char * path){
+	//check file exists
+	log_write(" in loads_data File path in params is [%s]",path);
+	char currentPath[PATH_MAX];
+	getcwd(currentPath,PATH_MAX);
+	if(path[0] != '/'){
+		//relative path given
+		strcat(currentPath,"/");
+		strcat(currentPath,path);
+		realpath((const char *)strdup(currentPath),currentPath);
 	}
-	argc -=1;
 
-	if(memorysize == 0)
-		return -1;
+	if( access( path, F_OK ) == -1 ) {
+	    // file doesn't exist
+	    strcpy(persistPath,currentPath);
+	    return 1;
+	}
+
+	
+
+	//read meta data
+	FILE *dataFile = fopen(path,"rb");
+	log_write("fopen done");
+	fread(&memorysize,sizeof(int),1,dataFile);
+	log_write("TOTAL MEMORY : %d",memorysize);
+	log_write("fopen memorysize");
 	memorysize *= 1024*1024;
-
-	memoffset = (char *)malloc(memorysize);
-	memset(memoffset,0,memorysize);
 
 	blockcount = memorysize/BLOCKSIZE;
 	
 	bitMap = (char*) malloc(blockcount);
-	memset(bitMap,0,blockcount);
-	
+	fread(bitMap,1,blockcount,dataFile);
+	log_write("fopen dataFile");
 	nextBlockMap = (int*) malloc(blockcount*(sizeof(int)));
-	memset(nextBlockMap,-1,blockcount*(sizeof(int)));
+	fread(nextBlockMap,sizeof(int),blockcount,dataFile);
+	log_write("fopen nextBlockMap");
+	fread(blockMap,sizeof(int),MAXPATHLIST,dataFile);
+	log_write("fopen blockMap");
+	int i=0;
+	for(i=0;i<MAXPATHLIST;i++){
+		fread(&pathlist[i],1,PATH_MAX,dataFile);
+	}
 
-	memset(blockMap,-1,MAXPATHLIST*(sizeof(int)));
-	init_pathlist();
-	/*
-	strcpy(pathlist[0],"/myasdf");
-	strcpy(pathlist[1],"/myfile");
-	fileSize[1] = 1024;
-	strcpy(pathlist[2],"/myfile2");
-	fileSize[2] = 2048;
-	strcpy(pathlist[3],"/mydir");
-	isDir[3]='d';
-	strcpy(pathlist[4],"/mydir/myfile3");
-	*/
+	log_write("fopen pathlist");
+fread(fileSize,sizeof(int),MAXPATHLIST , dataFile);
+	fread(blockMap,sizeof(int),MAXPATHLIST,dataFile);
+	log_write("fopen blockMap");
+	fread(isDir,1,MAXPATHLIST,dataFile);
+	log_write("fopen isDir");
+	
+	log_write("fopen fileSize");
+	//lseek to the data address
+	memoffset = (char *)malloc(memorysize);
+	fread(memoffset,1,memorysize,dataFile);
+	log_write("fopen memoffset");
+	//read the data and store in memory offset
+	fclose (dataFile);
+	return 0;
+}
+
+
+int main(int argc,char *argv[]){
+	log_init();
+	char *datafile;
+	if(argc == 3){
+		//running without mount file
+		memorysize = atoi(argv[2]);
+		argv[2][0]='\0';
+		argc -=1;
+		if(memorysize == 0)
+			return -1;
+		memorysize *= 1024*1024;
+
+		memoffset = (char *)malloc(memorysize);
+		memset(memoffset,0,memorysize);
+
+		blockcount = memorysize/BLOCKSIZE;
+		
+		bitMap = (char*) malloc(blockcount);
+		memset(bitMap,0,blockcount);
+		
+		nextBlockMap = (int*) malloc(blockcount*(sizeof(int)));
+		memset(nextBlockMap,-1,blockcount*(sizeof(int)));
+
+		memset(blockMap,-1,MAXPATHLIST*(sizeof(int)));
+		init_pathlist();
+	}else{
+		//running with mount file
+		usePersist = 1;
+		memorysize = atoi(argv[2]);
+		argv[2][0]='\0';
+		argc -=2;
+		datafile = strdup(argv[3]);
+		if(loads_data(datafile)){
+				if(memorysize == 0)
+					return -1;
+				memorysize *= 1024*1024;
+
+				memoffset = (char *)malloc(memorysize);
+				memset(memoffset,0,memorysize);
+
+				blockcount = memorysize/BLOCKSIZE;
+				
+				bitMap = (char*) malloc(blockcount);
+				memset(bitMap,0,blockcount);
+				
+				nextBlockMap = (int*) malloc(blockcount*(sizeof(int)));
+				memset(nextBlockMap,-1,blockcount*(sizeof(int)));
+
+				memset(blockMap,-1,MAXPATHLIST*(sizeof(int)));
+				init_pathlist();
+		}
+	}
+
 	log_write("LOG INITIALIZED, Running fuse");
 	int fuse_ret = fuse_main(argc,argv,&ramdisk_opts,NULL);
 	log_close();
